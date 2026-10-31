@@ -18,6 +18,13 @@ Kp = 1.5
 Kd = 2
 last_error = 0
 
+# Настройки поворотов на 90 градусов
+MAX_U = 100          # ограничение вращения
+HARD_U = 80          # вращение в жёстком повороте (было 100, меньше заброс)
+HARD_BASE = -40      # движение назад в жёстком повороте (0 = чистый разворот на месте)
+MIN_SPEED = 8        # минимальная скорость вперёд при сильной коррекции
+SLOW_K = 0.4         # насколько сильно сбрасываем скорость вперёд при коррекции
+
 # Моторы и сенсоры
 MOTOR_L = MediumMotor(OUTPUT_C)
 MOTOR_R = MediumMotor(OUTPUT_D)
@@ -36,6 +43,29 @@ def move_omni(speed_l, speed_r, speed_b):
     MOTOR_L.on(speed_l)
     MOTOR_R.on(speed_r)
     MOTOR_B.on(speed_b)
+
+def clamp(x, lo, hi):
+    return max(min(x, hi), lo)
+
+def drive_line(base, u):
+    # base: движение вперёд, u: вращение вокруг центра
+    speed_b = -u
+    speed_r = base - u
+    speed_l = -base - u
+
+    # Если какой-то мотор выходит за 100, масштабируем все три вместе,
+    # чтобы сохранить направление движения (раздельная обрезка
+    # смещала центр вращения и платформу "уводило" в повороте)
+    biggest = max(abs(speed_b), abs(speed_r), abs(speed_l))
+    if biggest > 100:
+        k = 100.0 / biggest
+        speed_b *= k
+        speed_r *= k
+        speed_l *= k
+
+    MOTOR_B.on(speed_b)
+    MOTOR_R.on(speed_r)
+    MOTOR_L.on(speed_l)
 
 def turn_180():
     move_omni(BASE_SPEED, -BASE_SPEED, 0)
@@ -111,35 +141,30 @@ try:
     is_hard_turning = False
     while True:
         intensity = COLOR_SENSOR.reflected_light_intensity
+        error = VALUE - intensity
 
         if intensity < BLACK:
             is_hard_turning = True
         
         if is_hard_turning and intensity >= VALUE:
             is_hard_turning = False
-            last_error = 0 
-                    
-        if is_hard_turning:
-            current_base_speed = -40 
-            U = 100  
-        else:
-            error = VALUE - intensity
-            derivative = error - last_error
-            last_error = error
-                    
-            U = Kp * error + Kd * derivative
-            current_base_speed = LINE_SPEED
-        speed_b = -U
-        speed_r = current_base_speed - U
-        speed_l = -current_base_speed - U      
-        
-        speed_b = max(min(speed_b, 100), -100)
-        speed_r = max(min(speed_r, 100), -100)
-        speed_l = max(min(speed_l, 100), -100)
 
-        MOTOR_B.on(speed_b)
-        MOTOR_R.on(speed_r)
-        MOTOR_L.on(speed_l)
+        if is_hard_turning:
+            current_base_speed = HARD_BASE
+            U = HARD_U
+        else:
+            derivative = error - last_error
+            U = Kp * error + Kd * derivative
+            U = clamp(U, -MAX_U, MAX_U)
+            # Чем сильнее коррекция, тем медленнее едем вперёд:
+            # на углу платформа почти разворачивается на месте
+            current_base_speed = max(LINE_SPEED - SLOW_K * abs(U), MIN_SPEED)
+
+        # last_error обновляется всегда, чтобы при выходе из жёсткого
+        # поворота D-составляющая не получала скачок от нуля
+        last_error = error
+
+        drive_line(current_base_speed, U)
         
 except KeyboardInterrupt:
     MOTOR_B.off()
